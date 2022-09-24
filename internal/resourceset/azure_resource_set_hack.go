@@ -14,14 +14,17 @@ import (
 // PopulateResourceTypesNeedsBody is a map to record resources that need API body to decide whether to populate.
 // This is used in single resource mode to see whether an API call is needed.
 var PopulateResourceTypesNeedsBody = map[string]bool{
-	"MICROSOFT.COMPUTE/VIRTUALMACHINES": true,
+	"MICROSOFT.COMPUTE/VIRTUALMACHINES":   true,
+	"MICROSOFT.NETWORK/NETWORKINTERFACES": true,
 }
 
 // PopulateResource populate single resource for certain Azure resouce type that is known might maps to more than one TF resources.
 // In most cases, this step is used to populate the Azure managed resource, or the Terraform pesudo (i.e. association/property-like) resource.
 func (rset *AzureResourceSet) PopulateResource() error {
-	// Populate managed data disk (and the association) for VMs that are missing from Azure exported resource set.
 	if err := rset.populateForVirtualMachine(); err != nil {
+		return err
+	}
+	if err := rset.populateForNetworkInterfaces(); err != nil {
 		return err
 	}
 	return nil
@@ -65,6 +68,7 @@ func (rset *AzureResourceSet) reduceForKeyVaultCertificate() error {
 	return nil
 }
 
+// Populate managed data disk (and the association) for VMs that are missing from Azure exported resource set.
 func (rset *AzureResourceSet) populateForVirtualMachine() error {
 	for _, res := range rset.Resources[:] {
 		if strings.ToUpper(res.Id.RouteScopeString()) != "/MICROSOFT.COMPUTE/VIRTUALMACHINES" {
@@ -102,7 +106,47 @@ func (rset *AzureResourceSet) populateForVirtualMachine() error {
 	return nil
 }
 
-// populateManagedResourcesByPath populate the managed resources in the specified paths.
+// Populate NSG association (if any) for network interfaces
+func (rset *AzureResourceSet) populateForNetworkInterfaces() error {
+	for _, res := range rset.Resources[:] {
+		if strings.ToUpper(res.Id.RouteScopeString()) != "/MICROSOFT.NETWORK/NETWORKINTERFACES" {
+			continue
+		}
+		nsgs, err := populateManagedResourcesByPath(res, "properties.networkSecurityGroup.id")
+		if err != nil {
+			return fmt.Errorf(`populating nsg for %q: %v`, res.Id, err)
+		}
+		if len(nsgs) != 1 {
+			continue
+		}
+		nsg := nsgs[0]
+
+		nicId, err := aztft.QueryId(res.Id.String(), "azurerm_network_interface", false)
+		if err != nil {
+			return fmt.Errorf("querying resource id for %s: %v", res.Id, err)
+		}
+		nsgId, err := aztft.QueryId(nsg.Id.String(), "azurerm_network_security_group", false)
+		if err != nil {
+			return fmt.Errorf("querying resource id for %s: %v", nsg.Id, err)
+		}
+
+		// Create a hypothetic Azure resource id for the association resource: <nic id>/networkSecurityGroups/<nsgName>
+		azureId := res.Id.Clone().(*armid.ScopedResourceId)
+		azureId.AttrTypes = append(azureId.AttrTypes, "networkSecurityGroups")
+		azureId.AttrNames = append(azureId.AttrNames, nsg.Id.(*armid.ScopedResourceId).Names()[0])
+
+		rset.Resources = append(rset.Resources, AzureResource{
+			Id: azureId,
+			PesudoResourceInfo: &PesudoResourceInfo{
+				TFType: "azurerm_network_interface_security_group_association",
+				TFId:   nicId + "|" + nsgId,
+			},
+		})
+	}
+	return nil
+}
+
+// populateManagedResourcesByPath populate the resource ids in the specified paths.
 func populateManagedResourcesByPath(res AzureResource, paths ...string) ([]AzureResource, error) {
 	b, err := json.Marshal(res.Properties)
 	if err != nil {

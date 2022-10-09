@@ -372,6 +372,7 @@ stages:
               MaxConcurrency: "50"
               MaxRetryAttempts: "5"
           - script: |
+                  set -e
                   git config user.name "azure-terraform-bot"
                   git config user.email "azure-terraform@microsoft.com"
                   git tag -a "${VERSION}" -m "${VERSION}"

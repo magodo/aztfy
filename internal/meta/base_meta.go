@@ -292,7 +292,7 @@ func (meta baseMeta) ExportResourceMapping(l ImportList) error {
 	if err != nil {
 		return fmt.Errorf("JSON marshalling the resource mapping: %v", err)
 	}
-	if err := os.WriteFile(output, b, 0600); err != nil {
+	if err := utils.WriteFileSync(output, b, 0600); err != nil {
 		return fmt.Errorf("writing the resource mapping to %s: %v", output, err)
 	}
 	return nil
@@ -310,7 +310,7 @@ func (meta baseMeta) ExportSkippedResources(l ImportList) error {
 	}
 
 	output := filepath.Join(meta.Workspace(), SkippedResourcesFileName)
-	if err := os.WriteFile(output, []byte(fmt.Sprintf(`Following resources are marked to be skipped:
+	if err := utils.WriteFileSync(output, []byte(fmt.Sprintf(`Following resources are marked to be skipped:
 
 %s
 `, strings.Join(sl, "\n"))), 0600); err != nil {
@@ -675,8 +675,13 @@ func appendToFile(path, content string) error {
 	// #nosec G307
 	defer f.Close()
 
-	_, err = f.WriteString(content)
-	return err
+	if _, err = f.WriteString(content); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func resourceNamePattern(p string) (prefix, suffix string) {

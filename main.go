@@ -3,16 +3,22 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	golog "log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/Azure/aztfy/internal/cfgfile"
 	internalconfig "github.com/Azure/aztfy/internal/config"
+	"github.com/Azure/aztfy/internal/telemetry"
+	"github.com/gofrs/uuid"
+	"github.com/tidwall/gjson"
 
 	"github.com/Azure/aztfy/pkg/config"
 	"github.com/Azure/aztfy/pkg/log"
@@ -74,7 +80,63 @@ func main() {
 		flagResType   string
 	)
 
-	beforeFunc := func(ctx *cli.Context) error {
+	prepareConfigFile := func(ctx *cli.Context) error {
+		// Prepare the config directory at $HOME/.aztfy
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("retrieving the user's HOME directory: %v", err)
+		}
+		configDir := filepath.Join(homeDir, cfgfile.CfgDirName)
+		if err := os.MkdirAll(configDir, 0755); err != nil {
+			return fmt.Errorf("creating the config directory at %s: %v", configDir, err)
+		}
+		configFile := filepath.Join(configDir, cfgfile.CfgFileName)
+
+		// Generate a configuration file if not exist.
+		if _, err := os.Stat(configFile); os.IsNotExist(err) {
+			// Get the installation id from following sources in order:
+			// 1. The Azure CLI's configuration file
+			// 2. The Azure PWSH's configuration file
+			// 3. Generate one
+			id, err := func() (string, error) {
+				if id, err := cfgfile.GetInstallationIdFromCLI(); err == nil {
+					return id, nil
+				}
+				log.Printf("[DEBUG] Installation ID not found from Azure CLI: %v", err)
+
+				if id, err := cfgfile.GetInstallationIdFromPWSH(); err == nil {
+					return id, nil
+				}
+				log.Printf("[DEBUG] Installation ID not found from Azure PWSH: %v", err)
+
+				uuid, err := uuid.NewV4()
+				if err != nil {
+					return "", fmt.Errorf("generating installation id: %w", err)
+				}
+				return uuid.String(), nil
+			}()
+
+			if err != nil {
+				return err
+			}
+
+			cfg := cfgfile.Configuration{
+				InstallationId:   id,
+				TelemetryEnabled: true,
+			}
+			b, err := json.Marshal(cfg)
+			if err != nil {
+				return fmt.Errorf("marshalling the configuration file: %v", err)
+			}
+			// #nosec G306
+			if err := os.WriteFile(configFile, b, 0644); err != nil {
+				return fmt.Errorf("writing the configuration file: %v", err)
+			}
+		}
+		return nil
+	}
+
+	commandBeforeFunc := func(ctx *cli.Context) error {
 		// Common flags check
 		if flagAppend {
 			if flagBackendType != "local" {
@@ -348,14 +410,135 @@ The output directory is not empty. Please choose one of actions below:
 		Version:   getVersion(),
 		Usage:     "Bring existing Azure resources under Terraform's management",
 		UsageText: "aztfy [command] [option]",
+		Before:    prepareConfigFile,
 		Commands: []*cli.Command{
+			{
+				Name:      "config",
+				Usage:     `aztfy configuration command`,
+				UsageText: "aztfy config [subcommand]",
+				Subcommands: []*cli.Command{
+					{
+						Name:      "set",
+						Usage:     `Set a configuration item for aztfy`,
+						UsageText: "aztfy config set key value",
+						Action: func(c *cli.Context) error {
+							if c.NArg() != 2 {
+								return fmt.Errorf("Please specify a configuration key and value")
+							}
+
+							key := c.Args().Get(0)
+							value := c.Args().Get(1)
+
+							homeDir, err := os.UserHomeDir()
+							if err != nil {
+								return fmt.Errorf("retrieving the user's HOME directory: %v", err)
+							}
+							path := filepath.Join(homeDir, cfgfile.CfgDirName, cfgfile.CfgFileName)
+							b, err := os.ReadFile(path)
+							if err != nil {
+								return fmt.Errorf("reading config: %v", err)
+							}
+
+							var cfg cfgfile.Configuration
+							if err := json.Unmarshal(b, &cfg); err != nil {
+								return fmt.Errorf("unmarshalling the config: %v", err)
+							}
+							newCfg, err := cfgfile.UpdateConfiguration(cfg, key, value)
+							if err != nil {
+								return err
+							}
+							b, err = json.Marshal(*newCfg)
+							if err != nil {
+								return fmt.Errorf("marshalling the updated config: %v", err)
+							}
+							f, err := os.OpenFile(path, os.O_TRUNC|os.O_WRONLY, 0)
+							if err != nil {
+								return fmt.Errorf("open config for writing: %v", err)
+							}
+							defer f.Close()
+							if _, err := f.Write(b); err != nil {
+								return fmt.Errorf("writing config: %v", err)
+							}
+							return nil
+						},
+					},
+					{
+						Name:      "get",
+						Usage:     `Get a configuration item for aztfy`,
+						UsageText: "aztfy config get key",
+						Action: func(c *cli.Context) error {
+							if c.NArg() != 1 {
+								return fmt.Errorf("Please specify a configuration key")
+							}
+
+							key := c.Args().Get(0)
+
+							homeDir, err := os.UserHomeDir()
+							if err != nil {
+								return fmt.Errorf("retrieving the user's HOME directory: %v", err)
+							}
+							path := filepath.Join(homeDir, cfgfile.CfgDirName, cfgfile.CfgFileName)
+							f, err := os.Open(path)
+							if err != nil {
+								return fmt.Errorf("opening config: %v", err)
+							}
+							defer f.Close()
+
+							b, err := io.ReadAll(f)
+							if err != nil {
+								return fmt.Errorf("reading config: %v", err)
+							}
+
+							result := gjson.Get(string(b), key)
+							if !result.Exists() {
+								return fmt.Errorf("invalid key")
+							}
+							fmt.Println(result.String())
+							return nil
+						},
+					},
+					{
+						Name:      "show",
+						Usage:     `Show the full configuration for aztfy`,
+						UsageText: "aztfy config show",
+						Action: func(c *cli.Context) error {
+							homeDir, err := os.UserHomeDir()
+							if err != nil {
+								return fmt.Errorf("retrieving the user's HOME directory: %v", err)
+							}
+							path := filepath.Join(homeDir, cfgfile.CfgDirName, cfgfile.CfgFileName)
+							f, err := os.Open(path)
+							if err != nil {
+								return fmt.Errorf("opening config: %v", err)
+							}
+							defer f.Close()
+
+							b, err := io.ReadAll(f)
+							if err != nil {
+								return fmt.Errorf("reading config: %v", err)
+							}
+
+							var v interface{}
+							if err := json.Unmarshal(b, &v); err != nil {
+								return err
+							}
+							b, err = json.MarshalIndent(v, "", "  ")
+							if err != nil {
+								return err
+							}
+							fmt.Println(string(b))
+							return nil
+						},
+					},
+				},
+			},
 			{
 				Name:      "resource",
 				Aliases:   []string{"res"},
 				Usage:     "Terrafying a single resource",
 				UsageText: "aztfy resource [option] <resource id>",
 				Flags:     resourceFlags,
-				Before:    beforeFunc,
+				Before:    commandBeforeFunc,
 				Action: func(c *cli.Context) error {
 					if c.NArg() == 0 {
 						return fmt.Errorf("No resource id specified")
@@ -384,6 +567,7 @@ The output directory is not empty. Please choose one of actions below:
 							Parallelism:     flagParallelism,
 							HCLOnly:         flagHCLOnly,
 							ModulePath:      flagModulePath,
+							TelemetryClient: initTelemetryClient(),
 						},
 						ResourceId:     resId,
 						TFResourceName: flagResName,
@@ -399,7 +583,7 @@ The output directory is not empty. Please choose one of actions below:
 				Usage:     "Terrafying a resource group and the nested resources resides within it",
 				UsageText: "aztfy resource-group [option] <resource group name>",
 				Flags:     resourceGroupFlags,
-				Before:    beforeFunc,
+				Before:    commandBeforeFunc,
 				Action: func(c *cli.Context) error {
 					if c.NArg() == 0 {
 						return fmt.Errorf("No resource group specified")
@@ -424,6 +608,7 @@ The output directory is not empty. Please choose one of actions below:
 							Parallelism:     flagParallelism,
 							HCLOnly:         flagHCLOnly,
 							ModulePath:      flagModulePath,
+							TelemetryClient: initTelemetryClient(),
 						},
 						ResourceGroupName:   rg,
 						ResourceNamePattern: flagPattern,
@@ -438,7 +623,7 @@ The output directory is not empty. Please choose one of actions below:
 				Usage:     "Terrafying a customized scope of resources determined by an Azure Resource Graph where predicate",
 				UsageText: "aztfy query [option] <ARG where predicate>",
 				Flags:     queryFlags,
-				Before:    beforeFunc,
+				Before:    commandBeforeFunc,
 				Action: func(c *cli.Context) error {
 					if c.NArg() == 0 {
 						return fmt.Errorf("No query specified")
@@ -463,6 +648,7 @@ The output directory is not empty. Please choose one of actions below:
 							Parallelism:     flagParallelism,
 							HCLOnly:         flagHCLOnly,
 							ModulePath:      flagModulePath,
+							TelemetryClient: initTelemetryClient(),
 						},
 						ARGPredicate:        predicate,
 						ResourceNamePattern: flagPattern,
@@ -478,7 +664,7 @@ The output directory is not empty. Please choose one of actions below:
 				Usage:     "Terrafying a customized scope of resources determined by the resource mapping file",
 				UsageText: "aztfy mapping-file [option] <resource mapping file>",
 				Flags:     mappingFileFlags,
-				Before:    beforeFunc,
+				Before:    commandBeforeFunc,
 				Action: func(c *cli.Context) error {
 					if c.NArg() == 0 {
 						return fmt.Errorf("No resource mapping file specified")
@@ -503,6 +689,7 @@ The output directory is not empty. Please choose one of actions below:
 							Parallelism:     flagParallelism,
 							HCLOnly:         flagHCLOnly,
 							ModulePath:      flagModulePath,
+							TelemetryClient: initTelemetryClient(),
 						},
 						MappingFile: mapFile,
 					}
@@ -538,7 +725,7 @@ func logLevel(level string) (hclog.Level, error) {
 	}
 }
 
-func initLog(path string, level hclog.Level) error {
+func initLog(path string, flaglevel string) error {
 	golog.SetOutput(io.Discard)
 
 	if path != "" {
@@ -546,6 +733,11 @@ func initLog(path string, level hclog.Level) error {
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
 		if err != nil {
 			return fmt.Errorf("creating log file %s: %v", path, err)
+		}
+
+		level, err := logLevel(flaglevel)
+		if err != nil {
+			return err
 		}
 
 		logger := hclog.New(&hclog.LoggerOptions{
@@ -571,6 +763,36 @@ func initLog(path string, level hclog.Level) error {
 	return nil
 }
 
+func initTelemetryClient() telemetry.Client {
+	telemetrySettingFromConfig := func() (enabled bool, id string) {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return false, ""
+		}
+		path := filepath.Join(homeDir, cfgfile.CfgDirName, cfgfile.CfgFileName)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return false, ""
+		}
+		var cfg cfgfile.Configuration
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			return false, ""
+		}
+		return cfg.TelemetryEnabled, cfg.InstallationId
+	}
+	enabled, id := telemetrySettingFromConfig()
+	if !enabled {
+		return telemetry.NewNullClient()
+	}
+	if id == "" {
+		uuid, err := uuid.NewV4()
+		if err == nil {
+			id = uuid.String()
+		}
+	}
+	return telemetry.NewApplication(id)
+}
+
 func subscriptionIdFromCLI() (string, error) {
 	var stderr bytes.Buffer
 	var stdout bytes.Buffer
@@ -591,26 +813,26 @@ func subscriptionIdFromCLI() (string, error) {
 }
 
 func realMain(ctx context.Context, cfg config.Config, batch, mockMeta, plainUI, genMapFile bool) (result error) {
-	// Initialize log
-	logLevel, err := logLevel(flagLogLevel)
-	if err != nil {
-		result = err
-		return
+	// Initialize logger
+	if err := initLog(flagLogPath, flagLogLevel); err != nil {
+		return err
 	}
-	if err := initLog(flagLogPath, logLevel); err != nil {
-		result = err
-		return
-	}
+
+	tc := cfg.TelemetryClient
 
 	defer func() {
 		if result == nil {
 			log.Printf("[INFO] aztfy ends")
+			tc.Trace(telemetry.Info, "aztfy ends")
 		} else {
 			log.Printf("[ERROR] aztfy ends with error: %v", result)
+			tc.Trace(telemetry.Error, fmt.Sprintf("aztfy ends with error: %v", result))
 		}
+		tc.Close()
 	}()
 
 	log.Printf("[INFO] aztfy starts with config: %#v", cfg)
+	tc.Trace(telemetry.Info, "aztfy starts")
 
 	// Run in non-interactive mode
 	if batch {

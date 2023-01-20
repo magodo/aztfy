@@ -1,5 +1,7 @@
 package config
 
+import "github.com/Azure/aztfy/internal/telemetry"
+
 type CommonConfig struct {
 	// SubscriptionId specifies the user's Azure subscription id.
 	SubscriptionId string
@@ -25,6 +27,8 @@ type CommonConfig struct {
 	// HCLOnly is a strange field, which is only used internally by aztfy to indicate whether to remove other files other than TF config at the end.
 	// External Go modules shoudl just ignore it.
 	HCLOnly bool
+	// TelemetryClient is a client to send telemetry
+	TelemetryClient telemetry.Client
 }
 
 type Config struct {

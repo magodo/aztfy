@@ -1,14 +1,14 @@
 package meta
 
 import (
+	"github.com/Azure/aztfexport/internal/resourceid"
 	"github.com/Azure/aztfexport/internal/tfaddr"
-	"github.com/magodo/armid"
 	"github.com/zclconf/go-cty/cty"
 )
 
 type ImportItem struct {
 	// Azure resource Id
-	AzureResourceID armid.ResourceId
+	AzureResourceID resourceid.AzureResourceId
 
 	// The TF resource id
 	TFResourceId string

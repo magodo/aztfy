@@ -10,6 +10,7 @@ import (
 	"github.com/Azure/aztfexport/pkg/config"
 
 	"github.com/Azure/aztfexport/internal/resmap"
+	"github.com/Azure/aztfexport/internal/resourceid"
 	"github.com/Azure/aztfexport/internal/tfaddr"
 	"github.com/magodo/armid"
 )
@@ -52,16 +53,25 @@ func (meta *MetaMap) ListResource(_ context.Context) (ImportList, error) {
 
 	var l ImportList
 	for id, res := range m {
-		azureId, err := armid.ParseResourceId(id)
-		if err != nil {
-			return nil, fmt.Errorf("parsing resource id %q: %v", id, err)
+		var rid resourceid.AzureResourceId
+
+		switch meta.providerName {
+		case "azuread":
+			rid = resourceid.NewMsGraphResourceId(id)
+		case "azurerm", "azapi":
+			armid, err := armid.ParseResourceId(id)
+			if err != nil {
+				return nil, fmt.Errorf("parsing resource id %q: %v", id, err)
+			}
+			rid = resourceid.NewArmResourceId(armid)
 		}
+
 		tfAddr := tfaddr.TFAddr{
 			Type: res.ResourceType,
 			Name: res.ResourceName,
 		}
 		item := ImportItem{
-			AzureResourceID: azureId,
+			AzureResourceID: rid,
 			TFResourceId:    res.ResourceId,
 			TFAddrCache:     tfAddr,
 			TFAddr:          tfAddr,

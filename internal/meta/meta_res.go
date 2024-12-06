@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Azure/aztfexport/internal/resourceid"
 	"github.com/Azure/aztfexport/internal/resourceset"
 	"github.com/Azure/aztfexport/internal/tfaddr"
 	"github.com/Azure/aztfexport/pkg/config"
@@ -13,7 +14,10 @@ import (
 
 type MetaResource struct {
 	baseMeta
-	AzureIds           []armid.ResourceId
+
+	// The input resource ids, can be either ARM resource ids (for arm) or TF ids (for msgraph)
+	ResourceIds []string
+
 	ResourceName       string
 	ResourceType       string
 	resourceNamePrefix string
@@ -27,19 +31,9 @@ func NewMetaResource(cfg config.Config) (*MetaResource, error) {
 		return nil, err
 	}
 
-	var ids []armid.ResourceId
-
-	for _, id := range cfg.ResourceIds {
-		id, err := armid.ParseResourceId(id)
-		if err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-
 	meta := &MetaResource{
 		baseMeta:     *baseMeta,
-		AzureIds:     ids,
+		ResourceIds:  cfg.ResourceIds,
 		ResourceName: cfg.TFResourceName,
 		ResourceType: cfg.TFResourceType,
 	}
@@ -50,100 +44,106 @@ func NewMetaResource(cfg config.Config) (*MetaResource, error) {
 }
 
 func (meta MetaResource) ScopeName() string {
-	if len(meta.AzureIds) == 1 {
-		return meta.AzureIds[0].String()
+	if len(meta.ResourceIds) == 1 {
+		return meta.ResourceIds[0]
 	} else {
-		return meta.AzureIds[0].String() + " and more..."
+		return meta.ResourceIds[0] + " and more..."
 	}
 }
 
 func (meta *MetaResource) ListResource(ctx context.Context) (ImportList, error) {
-	var resources []resourceset.AzureResource
-	for _, id := range meta.AzureIds {
-		resources = append(resources, resourceset.AzureResource{Id: id})
-	}
-
-	rset := &resourceset.AzureResourceSet{
-		Resources: resources,
-	}
-
-	meta.Logger().Debug("Azure Resource set map to TF resource set")
-
-	var rl []resourceset.TFResource
-	if meta.useAzAPI() {
-		rl = rset.ToTFAzAPIResources()
-	} else {
-		rl = rset.ToTFAzureRMResources(meta.Logger(), meta.parallelism, meta.azureSDKCred, meta.azureSDKClientOpt)
-	}
-
 	var l ImportList
 
-	// The ResourceName and ResourceType are only honored for single resource
-	if len(rl) == 1 {
-		res := rl[0]
-
-		// Honor the ResourceName
-		name := meta.ResourceName
-		if name == "" {
-			name = fmt.Sprintf("%s%d%s", meta.resourceNamePrefix, 0, meta.resourceNameSuffix)
-		}
-
-		// Honor the ResourceType
-		tftype := res.TFType
-		tfid := res.TFId
-		if meta.ResourceType != "" && meta.ResourceType != res.TFType {
-			// res.TFType can be either empty (if aztft failed to query), or not.
-			// If the user has specified a different type, then use it.
-			tftype = meta.ResourceType
-
-			// Also use this resource type to requery its resource id.
-			var err error
-			tfid, err = aztft.QueryId(res.AzureId.String(), meta.ResourceType,
-				&aztft.APIOption{
-					Cred:         meta.azureSDKCred,
-					ClientOption: meta.azureSDKClientOpt,
-				})
-			if err != nil {
-				return nil, err
+	switch meta.providerName {
+	case "azuread":
+		// For azuread provider, expect the resource id is the TF resource id, and the TF resource type is specified
+		for i, id := range meta.ResourceIds {
+			tfAddr := tfaddr.TFAddr{
+				Type: meta.ResourceType,
+				Name: meta.tfResourceName(i, len(meta.ResourceIds) == 1),
 			}
-		}
 
-		tfAddr := tfaddr.TFAddr{
-			Type: tftype,
-			Name: name,
+			item := ImportItem{
+				AzureResourceID: resourceid.NewMsGraphResourceId(id),
+				TFResourceId:    id,
+				TFAddr:          tfAddr,
+				TFAddrCache:     tfAddr,
+			}
+			l = append(l, item)
 		}
-
-		item := ImportItem{
-			AzureResourceID: res.AzureId,
-			TFResourceId:    tfid,
-			TFAddr:          tfAddr,
-			TFAddrCache:     tfAddr,
-		}
-		l = append(l, item)
 		return l, nil
+	case "azurerm", "azapi":
+
+		meta.Logger().Debug("Azure Resource set map to TF resource set")
+
+		var resources []resourceset.AzureResource
+		for _, id := range meta.ResourceIds {
+			rid, err := armid.ParseResourceId(id)
+			if err != nil {
+				return nil, fmt.Errorf("parsing ARM resource id %q: %v", id, err)
+			}
+			resources = append(resources, resourceset.AzureResource{Id: rid})
+		}
+		rset := &resourceset.AzureResourceSet{
+			Resources: resources,
+		}
+
+		var rl []resourceset.TFResource
+		if meta.providerName == "azapi" {
+			rl = rset.ToTFAzAPIResources()
+		} else {
+			rl = rset.ToTFAzureRMResources(meta.Logger(), meta.parallelism, meta.azureSDKCred, meta.azureSDKClientOpt)
+		}
+
+		for i, res := range rl {
+			tfAddr := tfaddr.TFAddr{
+				Type: res.TFType,
+				Name: meta.tfResourceName(i, len(rl) == 1),
+			}
+
+			item := ImportItem{
+				AzureResourceID: resourceid.NewArmResourceId(res.AzureId),
+				TFResourceId:    res.TFId,
+				TFAddr:          tfAddr,
+				TFAddrCache:     tfAddr,
+				IsRecommended:   meta.ResourceType == "",
+			}
+
+			// If the user has specified a different resource type then the deduced one,
+			// we need to use the user specified type and re-query the resource id.
+			if meta.ResourceType != "" && meta.ResourceType != res.TFType {
+				var err error
+				tfid, err := aztft.QueryId(res.AzureId.String(), meta.ResourceType,
+					&aztft.APIOption{
+						Cred:         meta.azureSDKCred,
+						ClientOption: meta.azureSDKClientOpt,
+					})
+				if err != nil {
+					return nil, err
+				}
+
+				item.TFResourceId = tfid
+				item.TFAddr.Type = meta.ResourceType
+				item.TFAddrCache.Type = meta.ResourceType
+				item.IsRecommended = false
+			}
+			l = append(l, item)
+		}
+
+		return l, nil
+	default:
+		return nil, fmt.Errorf("unknown resource provider type: %s", meta.providerName)
+	}
+}
+
+func (meta *MetaResource) tfResourceName(idx int, single bool) string {
+	if single {
+		if meta.ResourceName != "" {
+			return meta.ResourceName
+		} else {
+			fmt.Sprintf("%s%d%s", meta.resourceNamePrefix, idx, meta.resourceNameSuffix)
+		}
 	}
 
-	// Multi-resource mode only honors the resourceName[Pre|Suf]fix
-	for i, res := range rl {
-		tfAddr := tfaddr.TFAddr{
-			Type: "",
-			Name: fmt.Sprintf("%s%d%s", meta.resourceNamePrefix, i, meta.resourceNameSuffix),
-		}
-		item := ImportItem{
-			AzureResourceID: res.AzureId,
-			TFResourceId:    res.TFId,
-			TFAddr:          tfAddr,
-			TFAddrCache:     tfAddr,
-		}
-		if res.TFType != "" {
-			item.TFAddr.Type = res.TFType
-			item.TFAddrCache.Type = res.TFType
-			item.Recommendations = []string{res.TFType}
-			item.IsRecommended = true
-		}
-
-		l = append(l, item)
-	}
-
-	return l, nil
+	return fmt.Sprintf("%s%d%s", meta.resourceNamePrefix, idx, meta.resourceNameSuffix)
 }

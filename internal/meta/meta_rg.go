@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Azure/aztfexport/internal/resourceid"
 	"github.com/Azure/aztfexport/internal/resourceset"
 	"github.com/Azure/aztfexport/internal/tfaddr"
 	"github.com/Azure/aztfexport/pkg/config"
@@ -47,9 +48,10 @@ func (meta *MetaResourceGroup) ListResource(ctx context.Context) (ImportList, er
 	}
 
 	var rl []resourceset.TFResource
-	if meta.useAzAPI() {
+	switch meta.providerName {
+	case "azapi":
 		rl = rset.ToTFAzAPIResources()
-	} else {
+	case "azurerm":
 		meta.Logger().Debug("Populate resource set")
 		if err := rset.PopulateResource(); err != nil {
 			return nil, fmt.Errorf("tweaking single resources in the azure resource set: %v", err)
@@ -70,7 +72,7 @@ func (meta *MetaResourceGroup) ListResource(ctx context.Context) (ImportList, er
 			Name: fmt.Sprintf("%s%d%s", meta.resourceNamePrefix, i, meta.resourceNameSuffix),
 		}
 		item := ImportItem{
-			AzureResourceID: res.AzureId,
+			AzureResourceID: resourceid.NewArmResourceId(res.AzureId),
 			TFResourceId:    res.TFId,
 			TFAddr:          tfAddr,
 			TFAddrCache:     tfAddr,

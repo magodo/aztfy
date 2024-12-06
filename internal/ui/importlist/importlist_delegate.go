@@ -9,6 +9,7 @@ import (
 	"github.com/Azure/aztfexport/internal/ui/aztfexportclient"
 	"github.com/Azure/aztfexport/internal/ui/common"
 	"github.com/magodo/tfadd/providers/azapi"
+	"github.com/magodo/tfadd/providers/azuread"
 	"github.com/magodo/tfadd/providers/azurerm"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -165,6 +166,8 @@ func parseInput(input string, providerName string) (*tfaddr.TFAddr, error) {
 		_, ok = azurerm.ProviderSchemaInfo.ResourceSchemas[addr.Type]
 	case "azapi":
 		_, ok = azapi.ProviderSchemaInfo.ResourceSchemas[addr.Type]
+	case "azuread":
+		_, ok = azuread.ProviderSchemaInfo.ResourceSchemas[addr.Type]
 	}
 	if !ok {
 		return nil, fmt.Errorf("Invalid resource type %q", addr.Type)

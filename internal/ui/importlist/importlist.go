@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/magodo/textinput"
 	"github.com/magodo/tfadd/providers/azapi"
+	"github.com/magodo/tfadd/providers/azuread"
 	"github.com/magodo/tfadd/providers/azurerm"
 	"github.com/magodo/tfadd/schema"
 )
@@ -39,6 +40,8 @@ func NewModel(ctx context.Context, c meta.Meta, l meta.ImportList, idx int) Mode
 		resourceSchemas = azapi.ProviderSchemaInfo.ResourceSchemas
 	case "azurerm":
 		resourceSchemas = azurerm.ProviderSchemaInfo.ResourceSchemas
+	case "azuread":
+		resourceSchemas = azuread.ProviderSchemaInfo.ResourceSchemas
 	}
 	candidates := make([]string, 0, len(resourceSchemas))
 	for rt := range resourceSchemas {

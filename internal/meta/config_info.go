@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Azure/aztfexport/internal/resourceid"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
-	"github.com/magodo/armid"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -146,7 +146,7 @@ func (cfgs ConfigInfos) addReferenceDependency() error {
 	// TF resource id to Azure resource ids.
 	// Typically, one TF resource id maps to one Azure resource id. However, there are cases that one one TF resource id maps to multiple Azure resource ids.
 	// E.g. A parent and child resources have the same TF id. Or the association resource's TF id is the same as the master resource's.
-	m := map[string][]armid.ResourceId{}
+	m := map[string][]resourceid.AzureResourceId{}
 	for _, cfg := range cfgs {
 		m[cfg.TFResourceId] = append(m[cfg.TFResourceId], cfg.AzureResourceID)
 	}

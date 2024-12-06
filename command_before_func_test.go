@@ -25,11 +25,36 @@ func TestCommondBeforeFunc(t *testing.T) {
 
 	cases := []struct {
 		name      string
+		mode      Mode
 		fset      FlagSet
 		dirGen    func(t *testing.T) string
 		err       string
 		postCheck func(t *testing.T, flagset FlagSet)
 	}{
+		{
+			name: `platform "arm" conflicts with provider name "azuread"`,
+			fset: FlagSet{
+				flagPlatform:     "arm",
+				flagProviderName: "azuread",
+			},
+			err: "invalid provider name given platform arm: azuread",
+		},
+		{
+			name: `platform "msgraph" conflicts with provider name "azurerm"`,
+			fset: FlagSet{
+				flagPlatform:     "msgraph",
+				flagProviderName: "azurerm",
+			},
+			err: "invalid provider name given platform msgraph: azurerm",
+		},
+		{
+			name: `platform "msgraph" conflicts with provider name "azapi"`,
+			fset: FlagSet{
+				flagPlatform:     "msgraph",
+				flagProviderName: "azapi",
+			},
+			err: "invalid provider name given platform msgraph: azapi",
+		},
 		{
 			name: "--append conflicts with --overwrite",
 			fset: FlagSet{
@@ -212,6 +237,36 @@ func TestCommondBeforeFunc(t *testing.T) {
 			},
 			err: "`--hcl-only` only works for local backend",
 		},
+		{
+			name: `platform "msgraph" supports single resource mode`,
+			mode: ModeResource,
+			fset: FlagSet{
+				flagPlatform: "msgraph",
+			},
+		},
+		{
+			name: `platform "msgraph" supports mapping file mode`,
+			mode: ModeMappingFile,
+			fset: FlagSet{
+				flagPlatform: "msgraph",
+			},
+		},
+		{
+			name: `platform "msgraph" doesn't support rg mode`,
+			mode: ModeResourceGroup,
+			fset: FlagSet{
+				flagPlatform: "msgraph",
+			},
+			err: `"msgraph" platform only supports resource mode or mapping file mode`,
+		},
+		{
+			name: `platform "msgraph" doesn't support query mode`,
+			mode: ModeQuery,
+			fset: FlagSet{
+				flagPlatform: "msgraph",
+			},
+			err: `"msgraph" platform only supports resource mode or mapping file mode`,
+		},
 	}
 
 	for _, tt := range cases {
@@ -221,12 +276,26 @@ func TestCommondBeforeFunc(t *testing.T) {
 			}
 			tt.fset.flagOutputDir = tt.dirGen(t)
 
-			// This is to avoid reading the subscription id from az cli, which is not setup in CI.
-			if tt.fset.flagSubscriptionId == "" {
-				tt.fset.flagSubscriptionId = "test"
+			if tt.fset.flagPlatform == string(PlatformARM) {
+				// This is to avoid reading the subscription id from az cli, which is not setup in CI.
+				if tt.fset.flagSubscriptionId == "" {
+					tt.fset.flagSubscriptionId = "test"
+				}
 			}
 
-			err := commandBeforeFunc(&tt.fset, "")(nil)
+			// Always ensure the platform and providerName are correctly specified, if not explicit
+			if tt.fset.flagPlatform == "" {
+				tt.fset.flagPlatform = string(PlatformARM)
+			}
+			if tt.fset.flagProviderName == "" {
+				switch tt.fset.flagPlatform {
+				case string(PlatformARM):
+					tt.fset.flagProviderName = "azurerm"
+				case string(PlatformMsGraph):
+					tt.fset.flagProviderName = "azuread"
+				}
+			}
+			err := commandBeforeFunc(&tt.fset, tt.mode)(nil)
 			if tt.err == "" {
 				require.NoError(t, err)
 				if tt.postCheck != nil {

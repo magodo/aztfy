@@ -34,6 +34,7 @@ import (
 	"github.com/magodo/terraform-client-go/tfclient/configschema"
 	"github.com/magodo/terraform-client-go/tfclient/typ"
 	"github.com/magodo/tfadd/providers/azapi"
+	"github.com/magodo/tfadd/providers/azuread"
 	"github.com/magodo/tfadd/providers/azurerm"
 	"github.com/magodo/tfadd/tfadd"
 	"github.com/magodo/tfmerge/tfmerge"
@@ -50,7 +51,7 @@ type TFConfigTransformer func(configs ConfigInfos) (ConfigInfos, error)
 type BaseMeta interface {
 	// Logger returns a slog.Logger
 	Logger() *slog.Logger
-	// ProviderName returns the target provider name, which is either azurerm or azapi.
+	// ProviderName returns the target provider name
 	ProviderName() string
 	// Init initializes the base meta, including initialize terraform, provider and soem runtime temporary resources.
 	Init(ctx context.Context) error
@@ -90,8 +91,9 @@ type baseMeta struct {
 	outputFileNames   config.OutputFileNames
 	tf                *tfexec.Terraform
 	resourceClient    *armresources.Client
-	providerVersion   string
+	platform          string
 	devProvider       bool
+	providerVersion   string
 	providerName      string
 	backendType       string
 	backendConfig     []string
@@ -198,6 +200,8 @@ func NewBaseMeta(cfg config.CommonConfig) (*baseMeta, error) {
 			cfg.ProviderVersion = azurerm.ProviderSchemaInfo.Version
 		case "azapi":
 			cfg.ProviderVersion = azapi.ProviderSchemaInfo.Version
+		case "azuread":
+			cfg.ProviderVersion = azuread.ProviderSchemaInfo.Version
 		}
 	}
 
@@ -214,9 +218,12 @@ func NewBaseMeta(cfg config.CommonConfig) (*baseMeta, error) {
 	}
 
 	// Update provider config for auth config
-	if cfg.SubscriptionId != "" {
-		setIfNoExist("subscription_id", cty.StringVal(cfg.SubscriptionId))
+	if cfg.Platform == config.PlatformARM {
+		if cfg.SubscriptionId != "" {
+			setIfNoExist("subscription_id", cty.StringVal(cfg.SubscriptionId))
+		}
 	}
+
 	if v := cfg.AuthConfig.Environment; v != "" {
 		setIfNoExist("environment", cty.StringVal(v))
 	}
@@ -258,11 +265,13 @@ func NewBaseMeta(cfg config.CommonConfig) (*baseMeta, error) {
 	setIfNoExist("use_oidc", cty.BoolVal(cfg.AuthConfig.UseOIDC))
 
 	// Update provider config for provider registration
-	switch cfg.ProviderName {
-	case "azurerm":
-		setIfNoExist("resource_provider_registrations", cty.StringVal("none"))
-	case "azapi":
-		setIfNoExist("skip_provider_registration", cty.BoolVal(true))
+	if cfg.Platform == config.PlatformARM {
+		switch cfg.ProviderName {
+		case "azurerm":
+			setIfNoExist("resource_provider_registrations", cty.StringVal("none"))
+		case "azapi":
+			setIfNoExist("skip_provider_registration", cty.BoolVal(true))
+		}
 	}
 
 	meta := &baseMeta{
@@ -278,7 +287,7 @@ func NewBaseMeta(cfg config.CommonConfig) (*baseMeta, error) {
 		backendType:        cfg.BackendType,
 		backendConfig:      cfg.BackendConfig,
 		providerConfig:     providerConfig,
-		providerName:       cfg.ProviderName,
+		providerName:       string(cfg.ProviderName),
 		fullConfig:         cfg.FullConfig,
 		maskSensitive:      cfg.MaskSensitive,
 		parallelism:        cfg.Parallelism,
@@ -574,10 +583,6 @@ func (meta baseMeta) generateCfg(ctx context.Context, l ImportList, cfgTrans ...
 	return meta.generateConfig(cfginfos)
 }
 
-func (meta *baseMeta) useAzAPI() bool {
-	return meta.providerName == "azapi"
-}
-
 func (meta *baseMeta) buildTerraformConfig(backendType string) string {
 	backendLine := ""
 	if backendType != "" {
@@ -586,8 +591,13 @@ func (meta *baseMeta) buildTerraformConfig(backendType string) string {
 
 	providerName := meta.providerName
 
-	providerSource := "hashicorp/azurerm"
-	if meta.useAzAPI() {
+	var providerSource string
+	switch meta.providerName {
+	case "azurerm":
+		providerSource = "hashicorp/azurerm"
+	case "azuread":
+		providerSource = "hashicorp/azuread"
+	case "azapi":
 		providerSource = "azure/azapi"
 	}
 
@@ -610,11 +620,14 @@ func (meta *baseMeta) buildProviderConfig() string {
 	f := hclwrite.NewEmptyFile()
 
 	var body *hclwrite.Body
-	if meta.useAzAPI() {
-		body = f.Body().AppendNewBlock("provider", []string{"azapi"}).Body()
-	} else {
+	switch meta.providerName {
+	case "azurerm":
 		body = f.Body().AppendNewBlock("provider", []string{"azurerm"}).Body()
 		body.AppendNewBlock("features", nil)
+	case "azuread":
+		body = f.Body().AppendNewBlock("provider", []string{"azuread"}).Body()
+	case "azapi":
+		body = f.Body().AppendNewBlock("provider", []string{"azapi"}).Body()
 	}
 	for k, v := range meta.providerConfig {
 		body.SetAttributeValue(k, v)
@@ -629,7 +642,7 @@ func (meta *baseMeta) init_notf(ctx context.Context) error {
 	}
 
 	providerCfg := "{}"
-	if !meta.useAzAPI() {
+	if meta.providerName == "azurerm" {
 		// Ensure "features" is always defined in the azurerm provider initConfig
 		providerCfg = `{"features": []}`
 	}
@@ -789,7 +802,7 @@ func (meta *baseMeta) initProvider(ctx context.Context) error {
 		return err
 	}
 
-	if module.ProviderConfigs[meta.providerName] == nil {
+	if module.ProviderConfigs[string(meta.providerName)] == nil {
 		meta.Logger().Info("Output directory doesn't contain provider setting, create one then")
 		cfgFile := filepath.Join(meta.outdir, meta.outputFileNames.ProviderFileName)
 		// #nosec G306
@@ -968,8 +981,13 @@ func (meta baseMeta) stateToConfig(ctx context.Context, list ImportList) (Config
 
 	importedList := list.Imported()
 
-	providerName := "registry.terraform.io/hashicorp/azurerm"
-	if meta.useAzAPI() {
+	var providerName string
+	switch meta.providerName {
+	case "azurerm":
+		providerName = "registry.terraform.io/hashicorp/azurerm"
+	case "azuread":
+		providerName = "registry.terraform.io/hashicorp/azuread"
+	case "azapi":
 		providerName = "registry.terraform.io/azure/azapi"
 	}
 

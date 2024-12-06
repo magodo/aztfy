@@ -30,6 +30,7 @@ type FlagSet struct {
 	flagOverwrite           bool
 	flagAppend              bool
 	flagDevProvider         bool
+	flagPlatform            string
 	flagProviderVersion     string
 	flagProviderName        string
 	flagBackendType         string
@@ -99,6 +100,13 @@ type FlagSet struct {
 	flagARGAuthorizationScopeFilter string
 }
 
+type Platform string
+
+const (
+	PlatformARM     Platform = "arm"
+	PlatformMsGraph Platform = "msgraph"
+)
+
 type Mode string
 
 const (
@@ -115,11 +123,15 @@ func (flag FlagSet) DescribeCLI(mode Mode) string {
 	args := []string{string(mode)}
 
 	// The following flags are skipped eiter not interesting, or might contain sensitive info:
+	// - flagPlatform
 	// - flagOutputDir
 	// - flagDevProvider
 	// - flagBackendConfig
 	// - all hflags
 
+	if flag.flagPlatform != "" {
+		args = append(args, fmt.Sprintf("--platform=%s", flag.flagPlatform))
+	}
 	if flag.flagSubscriptionId != "" {
 		args = append(args, "--subscription=*")
 	}
@@ -426,8 +438,9 @@ func (f FlagSet) BuildCommonConfig() (config.CommonConfig, error) {
 		AzureSDKCredential:   cred,
 		AzureSDKClientOption: clientOpt,
 		OutputDir:            f.flagOutputDir,
+		Platform:             config.Platform(f.flagPlatform),
 		ProviderVersion:      f.flagProviderVersion,
-		ProviderName:         f.flagProviderName,
+		ProviderName:         config.ProviderType(f.flagProviderName),
 		DevProvider:          f.flagDevProvider,
 		ContinueOnError:      f.flagContinue,
 		BackendType:          f.flagBackendType,

@@ -14,7 +14,32 @@ import (
 
 func commandBeforeFunc(fset *FlagSet, mode Mode) func(ctx *cli.Context) error {
 	return func(ctx *cli.Context) error {
+		// Set the default value for the provider name (if not specified)
+		if fset.flagProviderName == "" {
+			switch Platform(fset.flagPlatform) {
+			case PlatformARM:
+				fset.flagProviderName = "azurerm"
+			case PlatformMsGraph:
+				fset.flagProviderName = "azuread"
+			}
+		}
+
 		// Common flags check
+
+		// Platform related checks
+		switch Platform(fset.flagPlatform) {
+		case PlatformARM:
+			if !slices.Contains([]string{"azurerm", "azapi"}, fset.flagProviderName) {
+				return fmt.Errorf("invalid provider name given platform %s: %s", fset.flagPlatform, fset.flagProviderName)
+			}
+		case PlatformMsGraph:
+			if !slices.Contains([]string{"azuread"}, fset.flagProviderName) {
+				return fmt.Errorf("invalid provider name given platform %s: %s", fset.flagPlatform, fset.flagProviderName)
+			}
+		default:
+			return fmt.Errorf("invalid platform value: %s", fset.flagPlatform)
+		}
+
 		if fset.flagAppend {
 			if fset.flagOverwrite {
 				return fmt.Errorf("`--append` conflicts with `--overwrite`")
@@ -105,20 +130,28 @@ func commandBeforeFunc(fset *FlagSet, mode Mode) func(ctx *cli.Context) error {
 		}
 
 		// Mode specific flags check
-		switch mode {
-		case ModeResource:
-			if ctx.Args().Len() > 1 || (ctx.Args().Len() == 1 && strings.HasPrefix(ctx.Args().First(), "@")) {
-				if fset.flagResType != "" {
-					return fmt.Errorf("`--type` can't be specified for multi-resource mode")
-				}
-				if fset.flagResName != "" {
-					return fmt.Errorf("`--name` can't be specified for multi-resource mode")
-				}
+		switch Platform(fset.flagPlatform) {
+		case PlatformMsGraph:
+			// msgraph currently only supports single resource export and map file export
+			if !slices.Contains([]Mode{ModeResource, ModeMappingFile}, mode) {
+				return fmt.Errorf(`"msgraph" platform only supports resource mode or mapping file mode`)
 			}
-		case ModeQuery:
-			if fset.flagARGAuthorizationScopeFilter != "" {
-				if !slices.Contains(armresourcegraph.PossibleAuthorizationScopeFilterValues(), armresourcegraph.AuthorizationScopeFilter(fset.flagARGAuthorizationScopeFilter)) {
-					return fmt.Errorf("invalid value of `--arg-authorization-scope-filter`")
+		case PlatformARM:
+			switch mode {
+			case ModeResource:
+				if ctx.Args().Len() > 1 || (ctx.Args().Len() == 1 && strings.HasPrefix(ctx.Args().First(), "@")) {
+					if fset.flagResType != "" {
+						return fmt.Errorf("`--type` can't be specified for multi-resource mode")
+					}
+					if fset.flagResName != "" {
+						return fmt.Errorf("`--name` can't be specified for multi-resource mode")
+					}
+				}
+			case ModeQuery:
+				if fset.flagARGAuthorizationScopeFilter != "" {
+					if !slices.Contains(armresourcegraph.PossibleAuthorizationScopeFilterValues(), armresourcegraph.AuthorizationScopeFilter(fset.flagARGAuthorizationScopeFilter)) {
+						return fmt.Errorf("invalid value of `--arg-authorization-scope-filter`")
+					}
 				}
 			}
 		}
@@ -224,16 +257,18 @@ The output directory is not empty. Please choose one of actions below:
 			}
 		}
 
-		// Identify the subscription id, which comes from one of following (starts from the highest priority):
-		// - Command line option
-		// - Env variable: AZTFEXPORT_SUBSCRIPTION_ID
-		// - Env variable: ARM_SUBSCRIPTION_ID
-		// - Output of azure cli, the current active subscription
-		if fset.flagSubscriptionId == "" {
-			var err error
-			fset.flagSubscriptionId, err = subscriptionIdFromCLI()
-			if err != nil {
-				return fmt.Errorf("retrieving subscription id from CLI: %v", err)
+		if fset.flagPlatform == string(PlatformARM) {
+			// Identify the subscription id, which comes from one of following (starts from the highest priority):
+			// - Command line option
+			// - Env variable: AZTFEXPORT_SUBSCRIPTION_ID
+			// - Env variable: ARM_SUBSCRIPTION_ID
+			// - Output of azure cli, the current active subscription
+			if fset.flagSubscriptionId == "" {
+				var err error
+				fset.flagSubscriptionId, err = subscriptionIdFromCLI()
+				if err != nil {
+					return fmt.Errorf("retrieving subscription id from CLI: %v", err)
+				}
 			}
 		}
 		return nil

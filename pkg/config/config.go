@@ -4,18 +4,33 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Azure/aztfexport/internal/resourceid"
 	"github.com/Azure/aztfexport/internal/tfaddr"
 	"github.com/Azure/aztfexport/pkg/telemetry"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
-	"github.com/magodo/armid"
 	"github.com/magodo/terraform-client-go/tfclient"
 	"github.com/zclconf/go-cty/cty"
 )
 
+type Platform string
+
+const (
+	PlatformARM     Platform = "arm"
+	PlatformMSGraph Platform = "msgraph"
+)
+
+type ProviderType string
+
+const (
+	ProviderTypeAzureRM ProviderType = "azurerm"
+	ProviderTypeAzapi   ProviderType = "azapi"
+	ProviderTypeAzureAD ProviderType = "azuread"
+)
+
 type ImportItem struct {
 	// Azure resource Id
-	AzureResourceID armid.ResourceId
+	AzureResourceID resourceid.AzureResourceId
 
 	// The TF resource id
 	TFResourceId string
@@ -45,7 +60,7 @@ type CommonConfig struct {
 	// AuthConfig specifies the authentication config for provider
 	// This doesn't impact the auth of the tool itself (e.g. listing resources), which is controlled by AzureSDKCredential field.
 	AuthConfig AuthConfig
-	// SubscriptionId specifies the user's Azure subscription id.
+	// (ARM only) SubscriptionId specifies the user's Azure subscription id.
 	SubscriptionId string
 	// AzureSDKCredential specifies the Azure SDK token credential
 	AzureSDKCredential azcore.TokenCredential
@@ -55,13 +70,17 @@ type CommonConfig struct {
 	OutputDir string
 	// OutputFileNames specifies the output terraform filenames
 	OutputFileNames OutputFileNames
-	// ProviderVersion specifies the provider version used for importing. If this is not set, it will use `{azurerm|azapi}.ProviderSchemaInfo.Version` for importing in order to be consistent with tfadd.
-	ProviderVersion string
 	// DevProvider specifies whether users have configured the `dev_overrides` for the provider, which then uses a development provider built locally rather than using a version pinned provider from official Terraform registry.
 	// Meanwhile, it will also avoid running `terraform init` during `Init()` for the import directories to avoid caculating the provider hash and populating the lock file (See: https://developer.hashicorp.com/terraform/language/files/dependency-lock). Though the init for the output directory is still needed for initializing the backend.
 	DevProvider bool
-	// ProviderName specifies the provider Name, which is either "azurerm" or "azapi.
-	ProviderName string
+	// Target Platform: either "arm" or "msgraph"
+	Platform Platform
+	// ProviderName specifies the provider Name, which is:
+	// - For platform arm: either "azurerm" or "azapi".
+	// - For platform msgraph: "azuread"
+	ProviderName ProviderType
+	// ProviderVersion specifies the provider version used for importing. If this is not set, it will use `{azurerm|azapi}.ProviderSchemaInfo.Version` for importing in order to be consistent with tfadd.
+	ProviderVersion string
 	// ContinueOnError specifies whether continue the progress even hit an import error.
 	ContinueOnError bool
 	// BackendType specifies the Terraform backend type.
@@ -129,6 +148,10 @@ type Config struct {
 
 	// TFResourceName specifies the TF resource name
 	TFResourceName string
+
+	/////////////////////////
+	// Scope: res (single, multi)
+
 	// TFResourceName specifies the TF resource type (if empty, will try to deduce the type)
 	TFResourceType string
 

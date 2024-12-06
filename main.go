@@ -21,10 +21,10 @@ import (
 
 	"github.com/Azure/aztfexport/pkg/config"
 
-	"github.com/magodo/armid"
 	"github.com/magodo/slog2hclog"
 	"github.com/magodo/terraform-client-go/tfclient"
 	"github.com/magodo/tfadd/providers/azapi"
+	"github.com/magodo/tfadd/providers/azuread"
 	"github.com/magodo/tfadd/providers/azurerm"
 
 	"github.com/Azure/aztfexport/internal"
@@ -124,6 +124,14 @@ func main() {
 			Usage:       "Imports to the existing state file if any and does not clean up the output directory",
 			Destination: &flagset.flagAppend,
 		},
+		&cli.StringFlag{
+			Name:        "platform",
+			EnvVars:     []string{"AZTFEXPORT_PLATFORM"},
+			Aliases:     []string{"p"},
+			Usage:       `The target platform. Possible values are: "arm" and "msgraph". Defaults to "arm"`,
+			Value:       "arm",
+			Destination: &flagset.flagPlatform,
+		},
 		&cli.BoolFlag{
 			Name:        "dev-provider",
 			EnvVars:     []string{"AZTFEXPORT_DEV_PROVIDER"},
@@ -133,14 +141,13 @@ func main() {
 		&cli.StringFlag{
 			Name:        "provider-version",
 			EnvVars:     []string{"AZTFEXPORT_PROVIDER_VERSION"},
-			Usage:       fmt.Sprintf("The provider version to use for importing. Defaults to %q for azurerm, %s for azapi", azurerm.ProviderSchemaInfo.Version, azapi.ProviderSchemaInfo.Version),
+			Usage:       fmt.Sprintf("The provider version to use for importing. Defaults to %q for azurerm, %s for azapi, %q for azuread", azurerm.ProviderSchemaInfo.Version, azapi.ProviderSchemaInfo.Version, azuread.ProviderSchemaInfo.Version),
 			Destination: &flagset.flagProviderVersion,
 		},
 		&cli.StringFlag{
 			Name:        "provider-name",
 			EnvVars:     []string{"AZTFEXPORT_PROVIDER_NAME"},
-			Usage:       fmt.Sprintf(`The provider name to use for importing. Possible values are "azurerm" and "azapi". Defaults to "azurerm"`),
-			Value:       "azurerm",
+			Usage:       fmt.Sprintf(`The provider name to use for importing. If "--platform=arm", possible values are "azurerm" (defaults) and "azapi"; If "--platform==msgraph", possible value is "azuread" (defaults).`),
 			Destination: &flagset.flagProviderName,
 		},
 		&cli.StringFlag{
@@ -377,13 +384,12 @@ func main() {
 		&cli.StringFlag{
 			Name:        "type",
 			EnvVars:     []string{"AZTFEXPORT_TYPE"},
-			Usage:       `The Terraform resource type (only works for single resource mode).`,
+			Usage:       `The Terraform resource type. If multiple resource ids provided, all resource ids expect to belong to the same resource type.`,
 			Destination: &flagset.flagResType,
 		},
 		&cli.StringFlag{
 			Name:        "name-pattern",
 			EnvVars:     []string{"AZTFEXPORT_NAME_PATTERN"},
-			Aliases:     []string{"p"},
 			Usage:       `The pattern of the resource name. The semantic of a pattern is the same as Go's os.CreateTemp() (only works for multi-resource mode).`,
 			Value:       "res-",
 			Destination: &flagset.flagPattern,
@@ -394,7 +400,6 @@ func main() {
 		&cli.StringFlag{
 			Name:        "name-pattern",
 			EnvVars:     []string{"AZTFEXPORT_NAME_PATTERN"},
-			Aliases:     []string{"p"},
 			Usage:       `The pattern of the resource name. The semantic of a pattern is the same as Go's os.CreateTemp()`,
 			Value:       "res-",
 			Destination: &flagset.flagPattern,
@@ -516,9 +521,6 @@ func main() {
 					var resIds []string
 					for _, arg := range c.Args().Slice() {
 						if !strings.HasPrefix(arg, "@") {
-							if _, err := armid.ParseResourceId(arg); err != nil {
-								return fmt.Errorf("invalid resource id: %v", err)
-							}
 							resIds = append(resIds, arg)
 							continue
 						}
@@ -535,9 +537,6 @@ func main() {
 							scanner := bufio.NewScanner(f)
 							for scanner.Scan() {
 								resId := strings.TrimSpace(scanner.Text())
-								if _, err := armid.ParseResourceId(resId); err != nil {
-									return fmt.Errorf("invalid resource id (contained in %q): %v", path, err)
-								}
 								resIds = append(resIds, resId)
 							}
 							return scanner.Err()

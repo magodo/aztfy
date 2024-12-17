@@ -265,12 +265,21 @@ The output directory is not empty. Please choose one of actions below:
 			// - Output of azure cli, the current active subscription
 			if fset.flagSubscriptionId == "" {
 				var err error
-				fset.flagSubscriptionId, err = subscriptionIdFromCLI()
+				fset.flagSubscriptionId, err = idFromCLI("id")
 				if err != nil {
 					return fmt.Errorf("retrieving subscription id from CLI: %v", err)
 				}
 			}
 		}
+
+		if fset.flagTenantId == "" {
+			var err error
+			fset.flagTenantId, err = idFromCLI("tenantId")
+			if err != nil {
+				return fmt.Errorf("retrieving tenant id from CLI: %v", err)
+			}
+		}
+
 		return nil
 	}
 }

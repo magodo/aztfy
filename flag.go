@@ -277,7 +277,7 @@ func (flag FlagSet) DescribeCLI(mode Mode) string {
 	return "aztfexport " + strings.Join(args, " ")
 }
 
-func initTelemetryClient(subscriptionId string) telemetry.Client {
+func initTelemetryClient(tenantId, subscriptionId string) telemetry.Client {
 	cfg, err := cfgfile.GetConfig()
 	if err != nil {
 		return telemetry.NewNullClient()
@@ -299,7 +299,7 @@ func initTelemetryClient(subscriptionId string) telemetry.Client {
 	if uuid, err := uuid.NewV4(); err == nil {
 		sessionId = uuid.String()
 	}
-	return telemetry.NewAppInsight(subscriptionId, installId, sessionId)
+	return telemetry.NewAppInsight(tenantId, subscriptionId, installId, sessionId)
 }
 
 func (f FlagSet) buildAuthConfig() (*config.AuthConfig, error) {
@@ -451,7 +451,7 @@ func (f FlagSet) BuildCommonConfig() (config.CommonConfig, error) {
 		HCLOnly:              f.flagHCLOnly,
 		ModulePath:           f.flagModulePath,
 		GenerateImportBlock:  f.flagGenerateImportBlock,
-		TelemetryClient:      initTelemetryClient(f.flagSubscriptionId),
+		TelemetryClient:      initTelemetryClient(f.flagTenantId, f.flagSubscriptionId),
 	}
 
 	if f.flagAppend {

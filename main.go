@@ -674,10 +674,10 @@ func main() {
 	}
 }
 
-func subscriptionIdFromCLI() (string, error) {
+func idFromCLI(id string) (string, error) {
 	var stderr bytes.Buffer
 	var stdout bytes.Buffer
-	cmd := exec.Command("az", "account", "show", "--output", "json", "--query", "id")
+	cmd := exec.Command("az", "account", "show", "--output", "json", "--query", id)
 	cmd.Stderr = &stderr
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -688,7 +688,7 @@ func subscriptionIdFromCLI() (string, error) {
 		return "", err
 	}
 	if stdout.String() == "" {
-		return "", fmt.Errorf("subscription id is not specified")
+		return "", fmt.Errorf("%q is not found", id)
 	}
 	return strconv.Unquote(strings.TrimSpace(stdout.String()))
 }

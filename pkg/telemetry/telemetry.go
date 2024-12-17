@@ -33,16 +33,18 @@ func (NullClient) Close()              {}
 
 type AppInsightClient struct {
 	appinsights.TelemetryClient
+	tenantId       string
 	subscriptionId string
 	installId      string
 	sessionId      string
 }
 
-func NewAppInsight(subscriptionId string, installId string, sessionid string) Client {
+func NewAppInsight(tenantId, subscriptionId, installId, sessionid string) Client {
 	// The instrument key of a MS managed application insights
 	const instrumentKey = "1bfe1d29-b42e-49b5-9d51-77514f85b37b"
 	return AppInsightClient{
 		TelemetryClient: appinsights.NewTelemetryClient(instrumentKey),
+		tenantId:        tenantId,
 		subscriptionId:  subscriptionId,
 		installId:       installId,
 		sessionId:       sessionid,
@@ -50,6 +52,7 @@ func NewAppInsight(subscriptionId string, installId string, sessionid string) Cl
 }
 
 type ApplicationInsightMessage struct {
+	TenantId       string `json:"tenant_id"`
 	SubscriptionId string `json:"subscription_id"`
 	InstallationId string `json:"installation_id"`
 	SessionId      string `json:"session_id"`
@@ -58,6 +61,7 @@ type ApplicationInsightMessage struct {
 
 func (c AppInsightClient) Trace(level Level, payload string) {
 	msg := ApplicationInsightMessage{
+		TenantId:       c.tenantId,
 		SubscriptionId: c.subscriptionId,
 		InstallationId: c.installId,
 		SessionId:      c.sessionId,

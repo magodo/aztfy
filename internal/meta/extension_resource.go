@@ -10,7 +10,7 @@ import (
 const (
 	ExtensionResourceTypeRoleAssignments    = "role-assignments"
 	ExtensionResourceTypeLocks              = "locks"
-	ExtensionResourceTypeDiagnosticSettings = "diagnostics-settings"
+	ExtensionResourceTypeDiagnosticSettings = "diagnostic-settings"
 )
 
 // SupportedExtensionResourceTypes is the list of supported extension resource types.
